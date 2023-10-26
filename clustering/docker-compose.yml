@@ -4,82 +4,128 @@ volumes:
    geoserver-cluster-data:
    geo-db-data:
 
+networks:
+  lan-cdr-coll:
+      
 services:
-   db:
-      image: kartoza/postgis:14-3.2
-      volumes:
-        - geo-db-data:/var/lib/postgresql
-      environment:
-        - POSTGRES_DB=gis
-        - POSTGRES_USER=docker
-        - POSTGRES_PASS=docker
-        - ALLOW_IP_RANGE=0.0.0.0/0
-        - FORCE_SSL=TRUE
-      restart: on-failure
-      healthcheck:
-        test: "pg_isready -d gis"
-   master:
-      image: kartoza/geoserver:2.21.0
-      volumes:
-         - geoserver-cluster-data:/opt/geoserver/data_dir
-      ports:
-        - "8081:8080"
-      environment:
-        - BROKER_URL=tcp://0.0.0.0:61661
-        - READONLY=disabled
-        - CLUSTER_DURABILITY=false
-        - CLUSTERING=True
-        - TOGGLE_MASTER=true
-        - TOGGLE_SLAVE=true
-        - DB_BACKEND=POSTGRES
-        - HOST=db
-        - POSTGRES_PORT=5432
-        - POSTGRES_DB=gis
-        - POSTGRES_USER=docker
-        - POSTGRES_PASS=docker
-        - SSL_MODE=allow
-        #- RANDOMSTRING=23bd87cfa327d47e
-        #- INSTANCE_STRING=ac3bcba2fa7d989678a01ef4facc4173010cd8b40d2e5f5a8d18d5f863ca976f
-      restart: on-failure
-      depends_on:
-        db:
-          condition: service_healthy
-      healthcheck:
-        test: curl --fail -s http://localhost:8080/ || exit 1
-        interval: 1m30s
-        timeout: 10s
-        retries: 3
-   node:
-      image: kartoza/geoserver:2.21.0
-      volumes:
-         - geoserver-cluster-data:/opt/geoserver/data_dir
-      ports:
-        - "8082:8080"
-      environment:
-        - BROKER_URL=tcp://master:61661
-        - READONLY=disabled
-        - CLUSTER_DURABILITY=false
-        - CLUSTERING=True
-        - TOGGLE_MASTER=true
-        - TOGGLE_SLAVE=true
-        - EMBEDDED_BROKER=disabled
-        - HOST=db
-        - POSTGRES_PORT=5432
-        - POSTGRES_DB=gis
-        - POSTGRES_USER=docker
-        - POSTGRES_PASS=docker
-        - SSL_MODE=allow
-      restart: on-failure
-      depends_on:
-        master:
-          condition: service_healthy
-        db:
-          condition: service_healthy
-      healthcheck:
-        test: curl --fail -s http://localhost:8080/ || exit 1
-        interval: 1m30s
-        timeout: 10s
-        retries: 3
-
+  db:
+    image: kartoza/postgis:14-3.2
+    volumes:
+      - geo-db-data:/var/lib/postgresql
+    environment:
+      - POSTGRES_DB=gis
+      - POSTGRES_USER=docker
+      - POSTGRES_PASS=docker
+      - ALLOW_IP_RANGE=0.0.0.0/0
+      - FORCE_SSL=TRUE
+    restart: on-failure
+    networks:
+      - lan-cdr-coll
+    healthcheck:
+      test: "pg_isready -d gis"
+  broker1:
+    image: kartoza/activemq-docker:2.20.2
+    build: activemq-docker
+    restart: on-failure
+    networks:
+      - lan-cdr-coll
+    environment:
+      - JAVA_HOME=/opt/java/openjdk
+      - HOST=db
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=gis
+      - POSTGRES_USER=docker
+      - POSTGRES_PASS=docker
+      - SSL_MODE=false
+      - ACTIVEMQ_SERVER_URI=tcp://broker1:61616?maximumConnections=1000&wireFormat.maxFrameSize=104857600&jms.useAsyncSend=false&transport.daemon=true
+      - ACTIVEMQ_SERVER_DISCOVERYURI=multicast://default
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: netstat -ltn | grep -c ":61616"
+      interval: 30s
+      timeout: 10s
+      retries: 10
+  master:
+    image: kartoza/geoserver:2.21.0
+    volumes:
+        - geoserver-cluster-data:/opt/geoserver/data_dir
+        - ./foo.sh:/docker-entrypoint-geoserver.d/foo.sh
+    ports:
+      - "8081:8080"
+    environment:
+      - BROKER_URL=tcp://broker1:61661
+      - READONLY=disabled
+      - CLUSTER_DURABILITY=false
+      - CLUSTERING=True
+      - TOGGLE_MASTER=true
+      - TOGGLE_SLAVE=true
+      - DB_BACKEND=POSTGRES
+      - HOST=db
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=gis
+      - POSTGRES_USER=docker
+      - POSTGRES_PASS=docker
+      - SSL_MODE=allow
+      - RANDOMSTRING=23bd87cfa327d47e
+      - INSTANCE_STRING=ac3bcba2fa7d989678a01ef4facc4173010cd8b40d2e5f5a8d18d5f863ca976f
+    restart: on-failure
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: curl --fail -s http://localhost:8080/ || exit 1
+      interval: 1m30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - lan-cdr-coll
+  node:
+    image: kartoza/geoserver:2.21.0
+    volumes:
+        - geoserver-cluster-data:/opt/geoserver/data_dir
+        - ./foo.sh:/docker-entrypoint-geoserver.d/foo.sh
+    ports:
+      - "8082:8080"
+    environment:
+      - BROKER_URL=tcp://master:61661
+      - READONLY=disabled
+      - CLUSTER_DURABILITY=false
+      - CLUSTERING=True
+      - TOGGLE_MASTER=true
+      - TOGGLE_SLAVE=true
+      - EMBEDDED_BROKER=disabled
+      - HOST=db
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=gis
+      - POSTGRES_USER=docker
+      - POSTGRES_PASS=docker
+      - SSL_MODE=allow
+    restart: on-failure
+    networks:
+      - lan-cdr-coll
+    depends_on:
+      master:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: curl --fail -s http://localhost:8080/ || exit 1
+      interval: 1m30s
+      timeout: 10s
+      retries: 3
+  lb-geo:
+    image: caddybalancer
+    build:
+      context: ./loadbalancer
+      dockerfile: Dockerfile
+    
+    ports:
+      - 9005:9005
+      - 80:80
+      - 443:443
+    networks:
+      - lan-cdr-coll
    
 
